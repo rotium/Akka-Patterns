@@ -27,7 +27,7 @@ import scala.util.Failure
 import akka.actor.ActorPath
 import scala.concurrent.Await
 
-trait Worker[T] extends ActorLogging {
+trait Worker[T, U] extends ActorLogging {
   selfActor: Actor ⇒
   implicit val tag: ClassTag[T]
   def masterLocation: ActorPath
@@ -41,15 +41,18 @@ trait Worker[T] extends ActorLogging {
   override def receive: Actor.Receive = {
     case WorkAvailable ⇒
       master ! WorkerReady
-    case work: Work[T] ⇒ 
-//      doWork(work.task, work.job, work.requester).onComplete {
-//        case Success(_) ⇒ master ! WorkerReady
-//        case Failure(e) ⇒ throw e
-//      }(context.dispatcher)
-    val t = doWork(work.task, work.job, work.requester).map{ v => master ! WorkerReady }(context.dispatcher)
-    val r = Await.result(t, 1.second)
+    case work: Work[T, U] ⇒
+      doWork(work.task, work.job, work.requester).onComplete {
+        case Success(result) ⇒
+          master ! WorkerReady
+          workCompleteSuccess(work, result)
+        case Failure(e) ⇒ workCompleteFailure(work, e)
+      }(context.dispatcher)
     case e ⇒ log.warning("Unknown message " + e)
   }
 
-  def doWork(task: T, job: Job[T], requester: ActorRef): Future[_]
+  def doWork(task: T, job: Job[T], requester: ActorRef): Future[U]
+
+  protected def workCompleteSuccess(work: Work[T, U], result: U) = {}
+  protected def workCompleteFailure(work: Work[T, U], e: Throwable) = {}
 }

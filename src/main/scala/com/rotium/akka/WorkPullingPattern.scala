@@ -33,7 +33,7 @@ object WorkPullingPattern {
   case class WorkStarted[T](job: Job[T]) extends Message
   case class WorkDone[T](job: Job[T]) extends Message
   case class RegisterWorker(worker: ActorRef) extends Message
-  case class Work[T](task: T, job: Job[T], requester: ActorRef) extends Message
+  case class Work[T,U](task: T, job: Job[T], requester: ActorRef) extends Message
   
-  case class CreateWorkers[A: ClassTag, T <: Actor with Worker[A]: ClassTag](n: Int)
+  case class CreateWorkers[A: ClassTag, U, T <: Actor with Worker[A, U]: ClassTag](n: Int)
 }

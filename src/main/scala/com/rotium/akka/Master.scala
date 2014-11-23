@@ -47,13 +47,19 @@ trait NotifyWorkDone extends WorkDone {
     super.jobDone(job, requester)
   }
 }
+trait NotifyWorkComplete extends WorkDone {
+  override abstract protected def jobDone(job: Job[MessageType], requester: ActorRef): Unit = {
+    requester ! WorkDone(job)
+    super.jobDone(job, requester)
+  }
+}
 
 trait Master[T] extends WorkStart with WorkDone with ActorLogging {
   selfActor: Actor ⇒
   type MessageType = T
 
   val workers = mutable.Set.empty[ActorRef]
-  val workersWithJob = mutable.Map.empty[ActorRef, Work[T]]
+  val workersWithJob = mutable.Map.empty[ActorRef, Work[T,_]]
   val jobs: mutable.Queue[(Job[T], ActorRef)] = mutable.Queue.empty
   var currentjob: Option[(Job[T], Iterator[T], ActorRef)] = None
 
@@ -121,14 +127,14 @@ trait Master[T] extends WorkStart with WorkDone with ActorLogging {
     }
   }
   
-  protected def createWorkers[A: ClassTag, T <: Actor with Worker[A]: ClassTag](n: Int): Unit = {
+  protected def createWorkers[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag](n: Int): Unit = {
     for (i ← 1 to n) {
       val a = createWorker
       context.self ! RegisterWorker(a)
     }
   }
 
-  protected def createWorker[A: ClassTag, T <: Actor with Worker[A]: ClassTag]() = {
+  protected def createWorker[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag]() = {
     context.actorOf(Props[T])
   }
 

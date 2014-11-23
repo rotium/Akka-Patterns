@@ -32,13 +32,14 @@ import com.rotium.akka.NotifyWorkStart
 import com.rotium.akka.WorkPullingPattern.WorkDone
 import com.rotium.akka.NotifyWorkStart
 import com.rotium.akka.WorkPullingPattern.CreateWorkers
+import com.rotium.akka.WorkPullingPattern.Work
 import akka.actor.ActorPath
 import akka.actor.SupervisorStrategy.Stop
 import akka.actor.OneForOneStrategy
 import com.rotium.akka.NotifyWorkStart
 
 class StringMaster extends Actor with Master[String] with NotifyWorkDone with NotifyWorkStart {
-  override def createWorker[A: ClassTag, T <: Actor with Worker[A]: ClassTag]() = {
+  override def createWorker[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag]() = {
     context.actorOf(Props(new StringWorker(context.self.path)))
   }
   override def unregisterWorker(worker: ActorRef) = {
@@ -49,7 +50,7 @@ class StringMaster extends Actor with Master[String] with NotifyWorkDone with No
   override def jobDone(job: Job[String], requester: ActorRef) = {
     super.jobDone(job, requester)
     if (jobs.isEmpty) {
-//      Thread.sleep(1000)
+      //      Thread.sleep(1000)
       println("Kill workers")
       workers foreach { _ ! PoisonPill }
     }
@@ -59,10 +60,10 @@ class StringMaster extends Actor with Master[String] with NotifyWorkDone with No
     log.error(s"Failure task: $task from ($job)")
   }
 }
-class StringWorker(val masterLocation: ActorPath)(implicit val tag: ClassTag[String]) extends Actor with Worker[String] {
+class StringWorker(val masterLocation: ActorPath)(implicit val tag: ClassTag[String]) extends Actor with Worker[String, String] {
 
   var c = 0;
-  def doWork(task: String, job: Job[String], requester: ActorRef): Future[_] = {
+  def doWork(task: String, job: Job[String], requester: ActorRef): Future[String] = {
     log.error("doWork=" + task)
     c += 1
     Future {
@@ -72,15 +73,19 @@ class StringWorker(val masterLocation: ActorPath)(implicit val tag: ClassTag[Str
       } else {
         log.error(s"Data($c)=$task")
         Thread.sleep(100)
+        s"Data($c)=$task"
       }
     }
+  }
+  override def workCompleteSuccess(work: Work[String, String], result: String) = {
+    println("workCompleteSuccess: " + work + " = " + result)
   }
 }
 
 case class Dispatch(job: Job[String])
 class JobDispatcher extends Actor {
   val master = context.system.actorOf(Props[StringMaster], "StringMaster")
-  master ! CreateWorkers[String, StringWorker](1)
+  master ! CreateWorkers[String, String, StringWorker](1)
 
   override def receive: Actor.Receive = {
     case Dispatch(job) ⇒ master ! job
@@ -92,16 +97,16 @@ object WorkPullingPatternDemo extends App {
 
   val system = ActorSystem("MyActorSystem")
 
-    val jobDispatcher = system.actorOf(Props[JobDispatcher], "JobDispatcher")
-    jobDispatcher ! Dispatch(Job(List("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9")))
-    jobDispatcher ! Dispatch(Job(List("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9")))
+  val jobDispatcher = system.actorOf(Props[JobDispatcher], "JobDispatcher")
+  jobDispatcher ! Dispatch(Job(List("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9")))
+  jobDispatcher ! Dispatch(Job(List("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9")))
 
-//  import akka.pattern.ask
-//  import akka.util.Timeout
-//  import scala.concurrent.duration._
-//  implicit val timeout = Timeout(10.seconds)
-//  val master = system.actorOf(Props[StringMaster], "StringMaster2")
-//   master ! CreateWorkers[String, StringWorker](1)
-//  val res = master ? Job(List("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"))
-//  res.onComplete { println }
+  //  import akka.pattern.ask
+  //  import akka.util.Timeout
+  //  import scala.concurrent.duration._
+  //  implicit val timeout = Timeout(10.seconds)
+  //  val master = system.actorOf(Props[StringMaster], "StringMaster2")
+  //   master ! CreateWorkers[String, StringWorker](1)
+  //  val res = master ? Job(List("A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9"))
+  //  res.onComplete { println }
 }
