@@ -22,23 +22,34 @@ import com.rotium.akka.WorkPullingPattern._
 import scala.concurrent.Future
 import scala.reflect.ClassTag
 import akka.actor.ActorLogging
+import scala.util.Success
+import scala.util.Failure
+import akka.actor.ActorPath
+import scala.concurrent.Await
 
 trait Worker[T] extends ActorLogging {
   selfActor: Actor ⇒
   implicit val tag: ClassTag[T]
-  def master: ActorRef
+  def masterLocation: ActorPath
+  val master = context.actorSelection(masterLocation)
 
-  override def preStart {
+  override def preStart = {
     master ! WorkerReady
   }
 
+  import scala.concurrent.duration._
   override def receive: Actor.Receive = {
     case WorkAvailable ⇒
       master ! WorkerReady
-    case Work(work: T) ⇒
-      doWork(work).onComplete { case _ ⇒ master ! WorkerReady }(context.dispatcher)
+    case work: Work[T] ⇒ 
+//      doWork(work.task, work.job, work.requester).onComplete {
+//        case Success(_) ⇒ master ! WorkerReady
+//        case Failure(e) ⇒ throw e
+//      }(context.dispatcher)
+    val t = doWork(work.task, work.job, work.requester).map{ v => master ! WorkerReady }(context.dispatcher)
+    val r = Await.result(t, 1.second)
     case e ⇒ log.warning("Unknown message " + e)
   }
 
-  def doWork(work: T): Future[_]
+  def doWork(task: T, job: Job[T], requester: ActorRef): Future[_]
 }

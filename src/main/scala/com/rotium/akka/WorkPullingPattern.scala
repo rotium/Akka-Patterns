@@ -17,6 +17,8 @@
 package com.rotium.akka
 
 import akka.actor.ActorRef
+import scala.reflect.ClassTag
+import akka.actor.Actor
 
 /**
  * @author rotem
@@ -24,11 +26,14 @@ import akka.actor.ActorRef
  */
 object WorkPullingPattern {
   sealed trait Message
-  case class Epic[T](t: Traversable[T]) //used by master to create work (in a streaming way)
+  case class Job[T](t: Traversable[T])
+  
   case object WorkerReady extends Message
   case object WorkAvailable extends Message
-  case class WorkStarted[T](epic: Epic[T]) extends Message
-  case class WorkDone[T](epic: Epic[T]) extends Message
+  case class WorkStarted[T](job: Job[T]) extends Message
+  case class WorkDone[T](job: Job[T]) extends Message
   case class RegisterWorker(worker: ActorRef) extends Message
-  case class Work[T](work: T) extends Message
+  case class Work[T](task: T, job: Job[T], requester: ActorRef) extends Message
+  
+  case class CreateWorkers[A: ClassTag, T <: Actor with Worker[A]: ClassTag](n: Int)
 }

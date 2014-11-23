@@ -24,59 +24,72 @@ import akka.actor.Terminated
 import akka.actor.ActorLogging
 import scala.reflect.ClassTag
 import akka.actor.Props
-
-case class CreateWorkers[A: ClassTag, T <: Actor with Worker[A]: ClassTag](n: Int)
+import akka.actor.OneForOneStrategy
+import akka.actor.SupervisorStrategy
 
 trait WorkStart {
   type MessageType
-  protected def epicStarted(epic: Epic[MessageType], requester: ActorRef)
+  protected def jobStarted(job: Job[MessageType], requester: ActorRef)
 }
 trait NotifyWorkStart extends WorkStart {
-  override abstract protected def epicStarted(epic: Epic[MessageType], requester: ActorRef) = {
-    requester ! WorkStarted(epic)
-    super.epicStarted(epic, requester)
+  override abstract protected def jobStarted(job: Job[MessageType], requester: ActorRef) = {
+    requester ! WorkStarted(job)
+    super.jobStarted(job, requester)
   }
 }
 trait WorkDone {
   type MessageType
-  protected def epicDone(epic: Epic[MessageType], requester: ActorRef): Unit
+  protected def jobDone(job: Job[MessageType], requester: ActorRef): Unit
 }
 trait NotifyWorkDone extends WorkDone {
-  override abstract protected def epicDone(epic: Epic[MessageType], requester: ActorRef): Unit = {
-    requester ! WorkDone(epic)
-    super.epicDone(epic, requester)
+  override abstract protected def jobDone(job: Job[MessageType], requester: ActorRef): Unit = {
+    requester ! WorkDone(job)
+    super.jobDone(job, requester)
   }
 }
 
 trait Master[T] extends WorkStart with WorkDone with ActorLogging {
   selfActor: Actor ⇒
   type MessageType = T
-  
-  val workers = mutable.Set.empty[ActorRef]
-  val epics: mutable.Queue[(Epic[T], ActorRef)] = mutable.Queue.empty
-  var currentEpic: Option[(Epic[T], ActorRef)] = None
-  var currentEpicItr: Option[Iterator[T]] = None
 
+  val workers = mutable.Set.empty[ActorRef]
+  val workersWithJob = mutable.Map.empty[ActorRef, Work[T]]
+  val jobs: mutable.Queue[(Job[T], ActorRef)] = mutable.Queue.empty
+  var currentjob: Option[(Job[T], Iterator[T], ActorRef)] = None
+
+  // Stop the CounterService child if it throws ServiceUnavailable
+//  override val supervisorStrategy = OneForOneStrategy() {
+//    case _: Exception => println("Restart"); SupervisorStrategy.Restart
+//  }
+  // override default to kill all children during restart
+  override def preRestart(cause: Throwable, msg: Option[Any]) {}
+  
   override def receive: Actor.Receive = {
-    case epic: Epic[T] ⇒
-      epicReceived(epic)
-      epics += ((epic, sender))
-      workers foreach { _ ! WorkAvailable }
+    case job: Job[T] ⇒
+      jobReceived(job)
+      jobs += ((job, sender))
+      workers filterNot (workersWithJob contains) foreach { w=>
+      println(s"notify workers: $w for now job: $job")
+      w ! WorkAvailable }
 
     case RegisterWorker(worker) ⇒
+    println(s"RegisterWorker($worker)")
       context.watch(worker)
       workers += worker
       registerWorker(worker)
-      worker ! WorkAvailable
+      if (!jobs.isEmpty) worker ! WorkAvailable
 
-    case c @ CreateWorkers(n) ⇒
+    case CreateWorkers(n) ⇒
       createWorkers(n)
 
     case Terminated(worker) ⇒
       workers.remove(worker)
+      val lostJob = workersWithJob.remove(worker)
+      lostJob.foreach { case Work(t, job, sender) ⇒ handleTaskRecover(job, t, sender) }
       unregisterWorker(worker)
 
     case WorkerReady ⇒
+      workersWithJob.remove(sender)
       workerReady(sender)
 
     case e ⇒
@@ -84,30 +97,30 @@ trait Master[T] extends WorkStart with WorkDone with ActorLogging {
   }
 
   private def workerReady(sender: ActorRef): Unit = {
-    currentEpicItr match {
+    currentjob match {
       case None ⇒
-        currentEpic = epics.dequeueFirst(_ ⇒ true)
-        currentEpicItr = currentEpic.map(_._1.t.toIterator)
-        currentEpicItr foreach { e ⇒
-          epicStarted(currentEpic.get._1, currentEpic.get._2)
-          //          currentEpic.get._2 ! WorkStarted(currentEpic.get._1)
-          workerReady(sender)
+        val nextjob = jobs.dequeueFirst(_ ⇒ true)
+        currentjob = nextjob map {
+          case (job, jobRequester) ⇒
+            jobStarted(job, jobRequester)
+            (job, job.t.toIterator, jobRequester)
         }
-
-      case Some(iter) ⇒
-        if (iter.hasNext) {
-          val i = iter.next
-          val w = Work(i)
+        currentjob foreach (_ ⇒ workerReady(sender))
+      case Some((job, jobItr, jobRequester)) ⇒
+        if (jobItr.hasNext) {
+          val task = jobItr.next
+          val w = Work(task, job, jobRequester)
+          workersWithJob += (sender -> w)
           sender ! w
         } else {
-          epicDone(currentEpic.get._1, currentEpic.get._2)
-          //          currentEpic.get._2 ! WorkDone(currentEpic.get._1)
-          currentEpicItr = None
+          jobDone(job, jobRequester)
+          currentjob = None
+          //          jobRequester ! WorkDone(job)
           workerReady(sender)
         }
     }
   }
-
+  
   protected def createWorkers[A: ClassTag, T <: Actor with Worker[A]: ClassTag](n: Int): Unit = {
     for (i ← 1 to n) {
       val a = createWorker
@@ -115,14 +128,15 @@ trait Master[T] extends WorkStart with WorkDone with ActorLogging {
     }
   }
 
-  def createWorker[A: ClassTag, T <: Actor with Worker[A]: ClassTag]() = {
+  protected def createWorker[A: ClassTag, T <: Actor with Worker[A]: ClassTag]() = {
     context.actorOf(Props[T])
   }
 
-  protected def epicReceived(epic: Epic[T]) = {}
-  override protected def epicStarted(epic: Epic[T], requester: ActorRef) = {}
-  override protected def epicDone(epic: Epic[T], requester: ActorRef) = {}
+  protected def jobReceived(job: Job[T]) = {}
+  override protected def jobStarted(job: Job[T], requester: ActorRef) = {}
+  override protected def jobDone(job: Job[T], requester: ActorRef) = {}
   protected def registerWorker(worker: ActorRef) = {}
   protected def unregisterWorker(worker: ActorRef) = {}
+  protected def handleTaskRecover(ob: Job[T], task: T, requester: ActorRef): Unit = {}
 
 }
