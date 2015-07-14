@@ -26,7 +26,7 @@ import akka.actor.Actor
  */
 object WorkPullingPattern {
   sealed trait Message
-  case class Job[T](t: Traversable[T])
+  case class Job[T](t: TraversableOnce[T])
   
   case object WorkerReady extends Message
   case object WorkAvailable extends Message
@@ -36,4 +36,5 @@ object WorkPullingPattern {
   case class Work[T,U](task: T, job: Job[T], requester: ActorRef) extends Message
   
   case class CreateWorkers[A: ClassTag, U, T <: Actor with Worker[A, U]: ClassTag](n: Int)
+  case class Shutdown()
 }

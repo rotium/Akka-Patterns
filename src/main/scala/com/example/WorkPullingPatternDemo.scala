@@ -16,30 +16,15 @@
 
 package com.example
 
-import scala.concurrent.ExecutionContext.Implicits.global
+import akka.actor.{Actor, ActorPath, ActorRef, ActorSystem, PoisonPill, Props}
+import com.rotium.akka.WorkPullingPattern.{CreateWorkers, Job, Work}
+import com.rotium.akka.{Master, NotifyWorkDone, NotifyWorkStart, Worker}
+
 import scala.concurrent.Future
 import scala.reflect.ClassTag
-import com.rotium.akka.Master
-import com.rotium.akka.WorkPullingPattern.Job
-import com.rotium.akka.Worker
-import akka.actor.Actor
-import akka.actor.ActorRef
-import akka.actor.ActorSystem
-import akka.actor.Props
-import akka.actor.PoisonPill
-import com.rotium.akka.NotifyWorkDone
-import com.rotium.akka.NotifyWorkStart
-import com.rotium.akka.WorkPullingPattern.WorkDone
-import com.rotium.akka.NotifyWorkStart
-import com.rotium.akka.WorkPullingPattern.CreateWorkers
-import com.rotium.akka.WorkPullingPattern.Work
-import akka.actor.ActorPath
-import akka.actor.SupervisorStrategy.Stop
-import akka.actor.OneForOneStrategy
-import com.rotium.akka.NotifyWorkStart
 
 class StringMaster extends Actor with Master[String] with NotifyWorkDone with NotifyWorkStart {
-  override def createWorker[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag]() = {
+  override def createWorker[W <: Actor with Worker[String, _]: ClassTag](id: Int) = {
     context.actorOf(Props(new StringWorker(context.self.path)))
   }
   override def unregisterWorker(worker: ActorRef) = {
@@ -57,28 +42,29 @@ class StringMaster extends Actor with Master[String] with NotifyWorkDone with No
   }
 
   override def handleTaskRecover(job: Job[String], task: String, requester: ActorRef): Unit = {
-    log.error(s"Failure task: $task from ($job)")
+    log.warning(s"Failure task: $task from ($job)")
   }
 }
 class StringWorker(val masterLocation: ActorPath)(implicit val tag: ClassTag[String]) extends Actor with Worker[String, String] {
 
-  var c = 0;
+  var c = 0
   def doWork(task: String, job: Job[String], requester: ActorRef): Future[String] = {
-    log.error("doWork=" + task)
+    implicit val executor = context.dispatcher
+    log.debug("doWork=" + task)
     c += 1
     Future {
       if (c % 4 == 0) {
-        println(s"! Error in Data($c)=$task")
+        log.warning(s"! Error in Data($c)=$task")
         throw new Exception("Error in Data=" + task)
       } else {
-        log.error(s"Data($c)=$task")
+        log.info(s"Data($c)=$task")
         Thread.sleep(100)
         s"Data($c)=$task"
       }
     }
   }
   override def workCompleteSuccess(work: Work[String, String], result: String) = {
-    println("workCompleteSuccess: " + work + " = " + result)
+    log.debug("workCompleteSuccess: " + work + " = " + result)
   }
 }
 

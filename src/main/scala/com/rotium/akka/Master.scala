@@ -16,16 +16,12 @@
 
 package com.rotium.akka
 
+import scala.annotation.tailrec
 import scala.collection.mutable
-import akka.actor.Actor
-import akka.actor.ActorRef
+import akka.actor._
 import com.rotium.akka.WorkPullingPattern._
-import akka.actor.Terminated
-import akka.actor.ActorLogging
+import scala.language.postfixOps
 import scala.reflect.ClassTag
-import akka.actor.Props
-import akka.actor.OneForOneStrategy
-import akka.actor.SupervisorStrategy
 
 trait WorkStart {
   type MessageType
@@ -54,6 +50,7 @@ trait NotifyWorkComplete extends WorkDone {
   }
 }
 
+//noinspection EmptyParenMethodAccessedAsParameterless,SideEffectsInMonadicTransformation
 trait Master[T] extends WorkStart with WorkDone with ActorLogging {
   selfActor: Actor ⇒
   type MessageType = T
@@ -68,53 +65,93 @@ trait Master[T] extends WorkStart with WorkDone with ActorLogging {
 //    case _: Exception => println("Restart"); SupervisorStrategy.Restart
 //  }
   // override default to kill all children during restart
-  override def preRestart(cause: Throwable, msg: Option[Any]) {}
+  override def preRestart(cause: Throwable, msg: Option[Any]): Unit = {}
   
   override def receive: Actor.Receive = {
     case job: Job[T] ⇒
       jobReceived(job)
       jobs += ((job, sender))
-      workers filterNot (workersWithJob contains) foreach { w=>
-      println(s"notify workers: $w for now job: $job")
-      w ! WorkAvailable }
+      log.info(s"notify workers for now job: $job")
+      workers filterNot (worker => workersWithJob contains worker) foreach { w=>
+        log.debug(s"notify worker: $w for now job: $job")
+        w ! WorkAvailable
+      }
 
     case RegisterWorker(worker) ⇒
-    println(s"RegisterWorker($worker)")
+      log.info(s"Register Worker ($worker)")
       context.watch(worker)
       workers += worker
       registerWorker(worker)
-      if (!jobs.isEmpty) worker ! WorkAvailable
+      //if (jobs.nonEmpty) worker ! WorkAvailable
 
     case CreateWorkers(n) ⇒
       createWorkers(n)
 
     case Terminated(worker) ⇒
-      workers.remove(worker)
-      val lostJob = workersWithJob.remove(worker)
-      lostJob.foreach { case Work(t, job, sender) ⇒ handleTaskRecover(job, t, sender) }
-      unregisterWorker(worker)
+      onTerminatedWorker(worker)
 
     case WorkerReady ⇒
       workersWithJob.remove(sender)
       workerReady(sender)
 
+    case Shutdown ⇒
+      log.warning("Shutdown myself ")
+      if (workersWithJob.isEmpty)
+        terminateAll()
+      if (workers.isEmpty) {
+        log.warning("no more workers - kill myself 1")
+        self ! PoisonPill
+      }
+      context.become {
+        case Terminated(worker) ⇒
+          log.warning("worker terminated: " + worker)
+          onTerminatedWorker(worker)
+          if (workers.isEmpty) {
+            log.warning("no more workers - kill myself 2")
+            self ! PoisonPill
+          }
+
+        case WorkerReady ⇒
+          log.warning("worker ready: " + sender)
+          workersWithJob.remove(sender)
+          if (workersWithJob.isEmpty)
+            terminateAll()
+      }
+
+
+
     case e ⇒
       log.warning("Unknown message " + e)
   }
 
+
+  private def terminateAll() = {
+    workers foreach { _ ! PoisonPill }
+  }
+
+  private def onTerminatedWorker(worker: ActorRef) = {
+    log.info(s"Unregister Worker ($worker)")
+    workers.remove(worker)
+    val lostJob = workersWithJob.remove(worker)
+    lostJob.foreach { case Work(t, job, sender) ⇒ handleTaskRecover(job, t, sender) }
+    unregisterWorker(worker)
+  }
+
+  @tailrec
   private def workerReady(sender: ActorRef): Unit = {
     currentjob match {
       case None ⇒
-        val nextjob = jobs.dequeueFirst(_ ⇒ true)
+        val nextjob = if (jobs.nonEmpty) Some(jobs.dequeue) else None //First(_ ⇒ true)
         currentjob = nextjob map {
           case (job, jobRequester) ⇒
             jobStarted(job, jobRequester)
             (job, job.t.toIterator, jobRequester)
         }
-        currentjob foreach (_ ⇒ workerReady(sender))
+//        currentjob foreach (_ ⇒ workerReady(sender))
+        if (currentjob.isDefined) workerReady(sender)
       case Some((job, jobItr, jobRequester)) ⇒
         if (jobItr.hasNext) {
-          val task = jobItr.next
+          val task = jobItr.next()
           val w = Work(task, job, jobRequester)
           workersWithJob += (sender -> w)
           sender ! w
@@ -127,15 +164,15 @@ trait Master[T] extends WorkStart with WorkDone with ActorLogging {
     }
   }
   
-  protected def createWorkers[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag](n: Int): Unit = {
+  protected def createWorkers[W <: Actor with Worker[T, _]: ClassTag](n: Int): Unit = {
     for (i ← 1 to n) {
-      val a = createWorker
+      val a = createWorker(i)
       context.self ! RegisterWorker(a)
     }
   }
 
-  protected def createWorker[A: ClassTag, T <: Actor with Worker[A, _]: ClassTag]() = {
-    context.actorOf(Props[T])
+  protected def createWorker[W <: Actor with Worker[T, _]: ClassTag](id: Int) = {
+    context.actorOf(Props[W],"Worker-"+id)
   }
 
   protected def jobReceived(job: Job[T]) = {}
